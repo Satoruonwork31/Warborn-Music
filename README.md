@@ -851,3 +851,65 @@ COOKIES_CONTENT=...          # or COOKIES_FILE=/path/cookies.txt
 # PROXY_URL=socks5://user:pass@host:port
 ```
 Then: `pip install -r requirements.txt && python main.py` — or `bash setup.sh` to auto-install FFmpeg + dependencies and start.
+
+---
+
+<div align="center">
+
+# 🖼️ Changing the Bot's Images
+
+*How to swap the picture the bot sends on `/start` (and every other image) for your own.*
+
+</div>
+
+The bot's images come from **two places**. Some are just a URL you set in `.env` (easiest — no code, no redeploy of files), and some are picture files committed inside the repo that you replace directly.
+
+---
+
+## 🟢 Type A — images set by a URL in `.env` (easiest)
+
+For these, upload your image anywhere that gives a **direct image link** (e.g. [imgbb](https://imgbb.com), [Catbox](https://catbox.moe), or a Telegram-hosted URL), then paste that link into the matching variable. Leave a variable blank to keep the built-in default.
+
+| What you see | Variable | Where |
+|--------------|----------|-------|
+| 🎬 The photo sent on **`/start`** | `START_IMAGE` | on the welcome card |
+| 📚 The photo sent on **`/help`** | `HELP_IMAGE` | on the help menu |
+| 👋 The **welcome (join) card** background | `WELCOME_BANNER_URL` | shown when a new member joins |
+| 🧑 Fallback **avatar** on the welcome card | `WELCOME_AVATAR_URL` | used when the joiner has no profile photo |
+| 💀 `/kill` result media | `KILL_SUCCESS_MEDIA` / `KILL_FAILURE_MEDIA` | the fun kill command |
+
+**Example — change the `/start` image:**
+```env
+START_IMAGE=https://i.ibb.co/your-own-image.jpg
+HELP_IMAGE=https://i.ibb.co/your-help-image.jpg
+```
+Save `.env`, restart the bot, and `/start` now sends **your** image. ✅
+
+> Tip: use a direct link that ends in `.jpg` / `.png` (opening it in a browser should show only the image). A normal webpage link won't work.
+
+---
+
+## 🔵 Type B — image *files* stored inside the repo
+
+These are actual files committed under **`bot/assets/`**. To change them, just replace the file with your own (keep the **same filename**), then commit/redeploy.
+
+| What it is | File to replace |
+|------------|-----------------|
+| 🎵 The **"Now Playing" card** template (background of the song card) | `bot/assets/now_playing_template.png` |
+| ✨ `/aura` videos | any file in `bot/assets/aura/` |
+| 🖐️ `/pat` GIFs | any file in `bot/assets/pat/` |
+| 💗 `/waifu` fallback pictures | `bot/assets/waifu/fallback_1.jpg`, `fallback_2.jpg` |
+
+**Notes:**
+- `/aura` and `/pat` pick a **random** file from their folder each time — so you can freely **add, remove, or replace** files there. New files are picked up automatically; no code change needed.
+- For `now_playing_template.png`, keep it a **PNG** with similar dimensions so the song title/artwork still line up.
+- To keep the same look but a different file name, that's fine for the `aura`/`pat`/`waifu` folders; for `now_playing_template.png` keep the exact name (it's referenced directly).
+
+---
+
+## Which one do I need?
+
+- **"I want a different picture on `/start` / `/help` / welcome"** → **Type A**, set the URL in `.env`. No files to touch.
+- **"I want different `/aura`, `/pat`, `/waifu`, or Now-Playing artwork"** → **Type B**, replace the files in `bot/assets/`.
+
+Either way, **you never have to modify the Python code** to change images — env vars for the URLs, file replacement for the assets.
