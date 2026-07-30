@@ -1,0 +1,318 @@
+"""/broadcast — owner-only fan-out of a message to every known chat.
+
+Two forms:
+  /broadcast <text>                  — sends the text to every chat
+  reply to a message + /broadcast    — copies the replied message verbatim
+
+In groups and supergroups, the sent message is pinned silently. DMs are
+not pinned (Telegram allows it but users find it intrusive).
+
+Chats are tracked as they message the bot — see bot/utils/chats.py. A
+passive group=-1 handler in this module records every chat_id we see.
+"""
+
+import asyncio
+import logging
+
+from pyrogram import Client, filters
+from pyrogram.enums import ChatMemberStatus, ChatType, ParseMode
+from pyrogram.errors import (
+    ChannelInvalid,
+    ChannelPrivate,
+    ChatAdminRequired,
+    ChatWriteForbidden,
+    FloodWait,
+    PeerIdInvalid,
+    UserIsBlocked,
+    UserIsBot,
+)
+
+from bot.utils import chats
+from bot.utils import emoji as e
+from bot.utils.owner import get_owner_ids, is_sudo
+
+logger = logging.getLogger("WarbornMusic.broadcast")
+
+# Bots can comfortably do ~30 unique-target sends per second before
+# Telegram throttles. 0.05s = 20/s, leaves headroom for retries.
+_DELAY_BETWEEN_SENDS = 0.05
+
+
+def _flood_seconds(exc: FloodWait) -> int:
+    # pyrofork 2.x uses .value, older releases used .x. Cover both.
+    return int(getattr(exc, "value", None) or getattr(exc, "x", 30))
+
+
+def _shift_entities_for_body(message, body_start: int):
+    """Return a list of MessageEntity objects shifted so they line up with
+    `message.text[body_start:]`. Entities entirely in the stripped prefix
+    are dropped; entities that straddle the split are clamped.
+
+    Used so `/broadcast <text-with-premium-emoji>` keeps the premium-emoji
+    entities — pyrofork's `send_message(text=str)` without an `entities=`
+    argument re-parses through whatever parse_mode is set and never re-emits
+    custom-emoji entities, which is why the visible glyph reverts to its
+    fallback character.
+    """
+    # Deep-copy each entity so we don't mutate state held on the original
+    # incoming Message (which other handlers may also read).
+    import copy
+
+    out = []
+    for ent in (message.entities or []):
+        ent_end = ent.offset + ent.length
+        if ent_end <= body_start:
+            continue
+        new = copy.copy(ent)
+        if ent.offset < body_start:
+            new.length = ent.length - (body_start - ent.offset)
+            new.offset = 0
+        else:
+            new.offset = ent.offset - body_start
+        if new.length <= 0:
+            continue
+        out.append(new)
+    return out
+
+
+async def _send_one(client, chat_id: int, *, reply, body: str, body_entities):
+    """Returns (sent_message, error_class_name_or_None).
+
+    For replied-message broadcasts we use forward_messages with
+    hide_sender_name=True (kurigram's name for the same flag pyrofork
+    called drop_author) rather than Message.copy(): copy() routes media
+    through send_cached_media WITHOUT parse_mode=DISABLED, which
+    re-parses caption_entities and strips premium custom emoji. The
+    native forward keeps entities (including <emoji id="..."> custom
+    emoji) byte-for-byte.
+
+    For text-mode broadcasts we pass `entities=...` explicitly so the
+    caller-extracted (and offset-shifted) custom-emoji entities are kept
+    on the wire instead of being re-parsed away.
+    """
+    if reply is not None:
+        forwarded = await client.forward_messages(
+            chat_id=chat_id,
+            from_chat_id=reply.chat.id,
+            message_ids=reply.id,
+            hide_sender_name=True,
+            disable_notification=True,
+        )
+        result = forwarded[0] if isinstance(forwarded, list) else forwarded
+        return result, None
+    sent = await client.send_message(
+        chat_id,
+        body,
+        entities=body_entities or None,
+    )
+    return sent, None
+
+
+async def _maybe_pin(client, message) -> bool:
+    """Pin silently if the destination is a group/supergroup. Returns
+    True on a successful pin, False otherwise (including non-group
+    chats — they intentionally aren't pinned).
+    """
+    if message is None or message.chat is None:
+        return False
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return False
+    try:
+        await client.pin_chat_message(
+            chat_id=message.chat.id,
+            message_id=message.id,
+            disable_notification=True,
+        )
+        return True
+    except ChatAdminRequired:
+        logger.info("Skip pin in %s: not admin", message.chat.id)
+    except Exception as exc:
+        logger.info("Pin failed in %s: %s", message.chat.id, exc)
+    return False
+
+
+@Client.on_message(filters.command("broadcast"))
+async def broadcast_command(client, message):
+    if not message.from_user:
+        return
+    if not await is_sudo(message.from_user.id):
+        owners = await get_owner_ids()
+        await message.reply_text(
+            f"🔒 {e.SHIELD} <b>Sudo only</b>\n\n"
+            f"<b>Your ID:</b> <code>{message.from_user.id}</code>\n"
+            f"<b>Owner(s):</b> <code>{', '.join(str(i) for i in sorted(owners)) or '(none)'}</code>\n\n"
+            "<i>Owner can grant access with /addsudo, or set OWNER_ID/SUDO_USERS in .env.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    reply = message.reply_to_message
+
+    # Pull the body text + entities directly off the original message so
+    # premium custom-emoji entities are preserved. Use `message.text` minus
+    # the "/broadcast " prefix rather than `message.command[1:]` (which
+    # strips entity offsets entirely).
+    body_text = ""
+    body_entities = []
+    if message.text and len(message.command) > 1:
+        # The body begins after the first whitespace following the command.
+        raw = str(message.text)
+        space = raw.find(" ")
+        if space != -1:
+            body_text = raw[space + 1 :]
+            body_entities = _shift_entities_for_body(message, space + 1)
+
+    if reply is None and not body_text:
+        await message.reply_text(
+            f"{e.MEGA} <b>Broadcast — how to use</b>\n"
+            "• <code>/broadcast &lt;text&gt;</code> — <i>send to every known chat</i>\n"
+            "• <i>Reply to a message with</i> <code>/broadcast</code> — <i>copy it verbatim</i>\n\n"
+            "<i>Groups: pinned silently. DMs: sent, not pinned.</i>",
+            parse_mode=ParseMode.HTML)
+        return
+
+    targets = chats.all_chats()
+    if not targets:
+        await message.reply_text(
+            "📭 <b>No known chats yet</b>\n"
+            "<i>The bot learns chats as it sees messages — let it run a bit, or "
+            "have a user DM it / message a group it's in.</i>",
+            parse_mode=ParseMode.HTML)
+        return
+
+    n_dms = sum(1 for c in targets if c > 0)
+    n_groups = len(targets) - n_dms
+    status = await message.reply_text(
+        f"{e.MEGA} <b>Broadcasting…</b>\n"
+        f"<i>{len(targets)} chat(s) — {n_groups} group(s) + {n_dms} DM(s)</i>",
+        parse_mode=ParseMode.HTML)
+
+    sent = 0
+    sent_dms = 0
+    sent_groups = 0
+    pinned = 0
+    failed = 0
+    forgotten = 0
+
+    for chat_id in targets:
+        kind = "DM" if chat_id > 0 else "group"
+        try:
+            bcast, _ = await _send_one(
+                client, chat_id, reply=reply, body=body_text, body_entities=body_entities
+            )
+            sent += 1
+            if chat_id > 0:
+                sent_dms += 1
+            else:
+                sent_groups += 1
+            logger.info("broadcast → %s %s OK", kind, chat_id)
+            if await _maybe_pin(client, bcast):
+                pinned += 1
+        except FloodWait as fw:
+            wait = _flood_seconds(fw)
+            logger.warning(
+                "FloodWait %ss while broadcasting to %s — sleeping then retrying",
+                wait, chat_id,
+            )
+            await asyncio.sleep(wait + 1)
+            try:
+                bcast, _ = await _send_one(
+                    client, chat_id, reply=reply, body=body_text, body_entities=body_entities
+                )
+                sent += 1
+                if await _maybe_pin(client, bcast):
+                    pinned += 1
+            except Exception as exc2:
+                failed += 1
+                logger.info("Retry-after-flood failed for %s: %s", chat_id, exc2)
+        except (
+            PeerIdInvalid,
+            UserIsBlocked,
+            UserIsBot,
+            ChannelInvalid,
+        ) as exc:
+            # Permanently dead: bot was kicked, user blocked us, chat or
+            # channel id no longer resolves. Drop from registry.
+            forgotten += 1
+            chats.forget(chat_id)
+            logger.info("Forgetting %s: %s: %s", chat_id, type(exc).__name__, exc)
+        except (ChatWriteForbidden, ChannelPrivate) as exc:
+            # Recoverable: bot lost write/pin permission in this chat, or
+            # the channel is currently private/admin-only. Keep the chat
+            # in the registry so the next broadcast tries again once
+            # permissions are restored.
+            failed += 1
+            logger.info(
+                "Broadcast to %s blocked (kept in registry): %s: %s",
+                chat_id, type(exc).__name__, exc,
+            )
+        except Exception as exc:
+            failed += 1
+            logger.info("Broadcast to %s failed: %s: %s", chat_id, type(exc).__name__, exc)
+
+        await asyncio.sleep(_DELAY_BETWEEN_SENDS)
+
+    summary = (
+        f"{e.MEGA} <b>Broadcast complete</b>\n\n"
+        f"✅ <b>Sent:</b> {sent}  <i>({sent_groups} group(s), {sent_dms} DM(s))</i>\n"
+        f"📌 <b>Pinned:</b> {pinned}\n"
+        f"❌ <b>Failed:</b> {failed}\n"
+        f"🗑️ <b>Forgotten (kicked/blocked/dead):</b> {forgotten}"
+    )
+    try:
+        await status.edit_text(summary, parse_mode=ParseMode.HTML)
+    except Exception:
+        await message.reply_text(summary, parse_mode=ParseMode.HTML)
+
+
+# Track the bot's OWN membership changes — fires when the bot is added to
+# a group, removed, promoted, or restricted. Registers the chat on join,
+# drops it on leave. Future-proofs the broadcast registry against the
+# /broadcast-only-hits-my-DM symptom.
+_PRESENT = (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+_GONE = (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED)
+
+
+@Client.on_chat_member_updated()
+async def _track_self_membership(client, update):
+    new = getattr(update, "new_chat_member", None)
+    if new is None or new.user is None:
+        return
+    if not getattr(new.user, "is_self", False):
+        # Some other member changed — not our concern; welcome.py handles that.
+        return
+    chat_id = update.chat.id if update.chat else None
+    if chat_id is None:
+        return
+    if new.status in _PRESENT:
+        if chats.remember(chat_id):
+            logger.info("self added to chat %s (status=%s)", chat_id, new.status)
+    elif new.status in _GONE:
+        if chats.forget(chat_id):
+            logger.info("self removed from chat %s (status=%s)", chat_id, new.status)
+
+
+# Passive: record every chat the bot sees a message in. group=-1 runs
+# before the command handlers in group=0 but doesn't consume the message
+# — different groups all fire independently.
+@Client.on_message(filters.all, group=-1)
+async def _track_chat(client, message):
+    chat = message.chat
+    user = message.from_user
+    try:
+        text = (message.text or message.caption or "")[:60]
+    except Exception:
+        logger.exception("Failed to read message text")
+        text = "<error>"
+    logger.info(
+        "saw msg in chat=%s (type=%s) from user=%s (id=%s) text=%r",
+        chat.id if chat else None,
+        chat.type.value if chat and chat.type else None,
+        user.username if user else None,
+        user.id if user else None,
+        text,
+    )
+    if chat is not None:
+        added = chats.remember(chat.id)
+        if added:
+            logger.info("registered new chat %s in registry", chat.id)
