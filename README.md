@@ -692,3 +692,162 @@ Generate a new String Session using the same Telegram account that will act as t
 # ❤️ Need Help?
 
 If you encounter any issues while setting up the bot, open a GitHub Issue or join the support group for
+
+---
+
+<div align="center">
+
+# 📘 Configuration Manual (Template Guide)
+
+*Everything you can set up or customise — all through `.env` unless noted.*
+
+</div>
+
+> ℹ️ **About this build:** persistence in this template is **optional Redis** (or automatic local JSON) — **MongoDB is not used or required**. You can leave any database field blank and the bot still runs. Fill in the five required values below, add cookies and/or a proxy for reliable YouTube on cloud hosts, and you're live.
+
+---
+
+## 1️⃣ Required — the bot won't start without these
+
+| Variable | Where to get it |
+|----------|-----------------|
+| `API_ID` | https://my.telegram.org → API development tools |
+| `API_HASH` | same page as API_ID |
+| `BOT_TOKEN` | [@BotFather](https://t.me/BotFather) → `/newbot` |
+| `STRING_SESSION` | run `python3 scripts/session_gen.py` and log in with the **assistant** account |
+| `OWNER_ID` | your Telegram numeric id (comma/space list allowed for multiple owners) |
+
+> ⚠️ A `STRING_SESSION` gives **full access** to that Telegram account — use a spare/dedicated account for the assistant, and never share or commit it.
+
+**Before running:** in @BotFather turn **Group Privacy → OFF**, and make the bot an **admin** in your group (manage voice chats + delete messages).
+
+---
+
+## 2️⃣ Branding & Links — make it *yours*
+
+All optional. A link left blank simply hides that button — no dead buttons.
+
+| Variable | Effect |
+|----------|--------|
+| `BOT_NAME` | The name shown on `/start`, `/help`, `/stats` (default `Warborn Music`) |
+| `BOT_USERNAME` | Your bot's @username for the "Add me to your group" button (auto-detected if left blank) |
+| `SUPPORT_CHAT` | Support button link — accepts a full URL, `@handle`, or `t.me/...` |
+| `UPDATE_CHANNEL` | Updates button link |
+| `OWNER_URL` | Owner button link |
+| `START_IMAGE` | Banner image URL on `/start` |
+| `HELP_IMAGE` | Banner image URL on `/help` |
+| `WELCOME_BANNER_URL` | Background art for the welcome (join) card |
+| `WELCOME_AVATAR_URL` | Fallback avatar when a joining user has no profile photo |
+| `KILL_SUCCESS_MEDIA` / `KILL_FAILURE_MEDIA` | Media shown by the fun `/kill` command |
+| `WAIFU_BRAND` | Optional heading line on the `/waifu` card |
+
+### ✍️ Changing the start / help *text* (code, not `.env`)
+
+The wording of the welcome and help messages lives in code so you can style them freely:
+
+- **Start message:** edit `_start_caption()` in [`bot/plugins/start.py`](bot/plugins/start.py)
+- **Help pages / command list:** edit the `HELP_PAGES` list in [`bot/plugins/help.py`](bot/plugins/help.py)
+
+The bot name in those texts already pulls from `BOT_NAME`, so for a simple rename you only need the env var — edit the files only if you want to reword or restyle.
+
+---
+
+## 3️⃣ Cookies — for YouTube / Instagram downloads
+
+On most cloud/datacenter IPs, YouTube and Instagram block anonymous access. Supply cookies exported (Netscape `cookies.txt` format) from a logged-in browser session.
+
+| Variable | Use |
+|----------|-----|
+| `COOKIES_FILE` | Path to a `cookies.txt` on disk (VPS / Docker volume) |
+| `COOKIES_CONTENT` | Paste the **raw** `cookies.txt` contents inline (for PaaS hosts that only allow env vars) |
+| `INSTAGRAM_COOKIES_FILE` / `INSTAGRAM_COOKIES_CONTENT` | Same, for Instagram links |
+| `COOKIES_DIR` | A folder of extra `*.txt` cookie jars for automatic health-based rotation |
+| `COOKIE_CHECK_INTERVAL_MIN` | How often (minutes) the background health checker probes the active jar |
+| `COOKIE_FORCE_REFRESH_HOURS` | Rotate a still-healthy jar once it's older than this |
+
+- If both `*_FILE` and `*_CONTENT` are set, **`*_FILE` wins**.
+- Browser cookies **expire in hours-to-days** — refresh them when playback starts failing. The built-in health-checker rotates between jars automatically but cannot create new ones.
+
+---
+
+## 4️⃣ Proxies — the most reliable fix for YouTube on cloud hosts
+
+A **residential** proxy is the single best fix for "bot-check" / "format not available" errors on a datacenter/VPS IP. Single proxy or an auto-rotating pool are both supported.
+
+| Variable | Use |
+|----------|-----|
+| `PROXY_URL` | One proxy for **both** Telegram + yt-dlp. `socks5://user:pass@host:port`, `socks4://…`, or `http://host:port` |
+| `PROXIES_FILE` | A pool file (one proxy per line) for the Telegram clients — a random one is picked per start |
+| `YT_DLP_PROXY` | A yt-dlp-**only** proxy (Telegram stays direct) |
+| `YT_DLP_PROXY_LIST` | A rotating pool for yt-dlp — auto-rotates off a dead/failed proxy |
+| `YT_DLP_PROXY_STRICT` | Set to refuse a direct fallback if all proxies fail (never leak the server's real IP) |
+
+**Pool file format** (`PROXIES_FILE` / `YT_DLP_PROXY_LIST`) — one per line, either style:
+```
+socks5://user:pass@host:port
+host:port:user:pass          # shorthand (defaults to http); blank lines and # comments ignored
+```
+Test a proxy list before deploying with: `python3 scripts/validate_proxies.py`
+
+---
+
+## 5️⃣ Audio source options (pick any — all optional)
+
+The bot always **searches** YouTube cookielessly, then **fetches** the audio using whichever of these is available, falling back automatically:
+
+| Variable | Use |
+|----------|-----|
+| `API_URL` / `API_KEY` | External YouTube audio-fetch gateway. When set, the server never hits YouTube's CDN directly — the most hands-off option on cloud hosts |
+| `MEDIA_API_URL` / `MEDIA_API_KEY` | Optional microservice for Instagram/Pinterest downloads (falls back to local yt-dlp) |
+| `MEDIA_API_INSTAGRAM_ENABLED` | Set `false` to skip the media API for Instagram and use the local fallback |
+| `ALLOW_JIOSAAVN_FALLBACK` | Set `1` to allow a JioSaavn last-resort track when YouTube fetch fails (may play a different rendition) |
+
+**No API? No problem.** Leave `API_URL`/`API_KEY` blank and the bot fetches via local **yt-dlp + your cookies** (and proxy, if set). See §3 and §4.
+
+### Which combo should a forker use?
+
+| Host type | Recommended setup |
+|-----------|-------------------|
+| Home PC / residential VPS | **Cookies only** — works great |
+| Cloud (Railway/Heroku/Koyeb/Render) | **Cookies + residential `PROXY_URL`**, *or* an `API_URL` gateway |
+
+---
+
+## 6️⃣ Persistence — keep data across restarts (optional)
+
+| Variable | Use |
+|----------|-----|
+| `REDIS_URL` | Redis/Upstash URL. Persists served chats, `/stats` reach, greetings, sudoers, blacklist, gban, and the log channel across redeploys. Free tier at [console.upstash.com](https://console.upstash.com) |
+| `REDIS_PREFIX` | Key namespace (default `warborn`) |
+
+Leave `REDIS_URL` blank and the bot uses local JSON files instead — everything still works, but that data **resets on every redeploy** on ephemeral hosts.
+
+---
+
+## 7️⃣ Other optional settings
+
+| Variable | Use |
+|----------|-----|
+| `LOG_GROUP_ID` | Channel/group id for event logs (start / add / download). Add the bot there as admin. Can also be set at runtime with `/setlog` |
+| `SUDO_USERS` | Extra delegated sudo user ids (comma/space list) — powers without full owner rights |
+| `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | Resolve Spotify links ([developer.spotify.com](https://developer.spotify.com/dashboard)) |
+| `USERBOT_START_DELAY` | Seconds to wait for an old instance to shut down on rolling-deploy hosts (Railway). Default 25; set 0 to disable |
+| `WELCOME_POLL_MAX_MEMBERS` | Groups larger than this aren't polled for welcome/farewell (keeps API usage modest) |
+
+📄 **The complete, commented list of every variable is in [`.env.example`](.env.example)** — copy it to `.env` and fill in what you need.
+
+---
+
+## ✅ Minimum to go live
+
+```env
+API_ID=12345678
+API_HASH=your_api_hash
+BOT_TOKEN=123456:your_bot_token
+STRING_SESSION=your_assistant_session
+OWNER_ID=your_user_id
+# recommended for YouTube on a cloud host:
+COOKIES_CONTENT=...          # or COOKIES_FILE=/path/cookies.txt
+# PROXY_URL=socks5://user:pass@host:port
+```
+Then: `pip install -r requirements.txt && python main.py` — or `bash setup.sh` to auto-install FFmpeg + dependencies and start.
