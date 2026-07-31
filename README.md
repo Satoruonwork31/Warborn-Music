@@ -42,7 +42,7 @@ Follow these steps to set up **Warborn Music**.
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Satoruonwork31/Warborn-Music.git
+git clone https://github.com/Void-Verser/Warborn-Music.git
 cd Warborn-Music
 ```
 
@@ -252,7 +252,7 @@ For Docker deployments, you can either use a `.env` file or pass the environment
 ## 🖥️ Deploy on VPS
 
 ```bash
-git clone https://github.com/Satoruonwork31/Warborn-Music.git
+git clone https://github.com/Void-Verser/Warborn-Music.git
 cd Warborn-Music
 
 pip install -r requirements.txt
@@ -363,7 +363,7 @@ See the **LICENSE** file for more information.
 
 # ❤️ Credits
 
-**Warborn Music** is maintained by **Satoruonwork31**.
+**Warborn Music** is maintained by **Ray**.
 
 Powered by **Raiden Music Bot**.
 
@@ -387,7 +387,7 @@ Made with ❤️ for the Telegram community.
 Clone the repository:
 
 ```bash
-git clone https://github.com/Satoruonwork31/Raiden-Music-Bot.git
+git clone https://github.com/Void-Verser/Raiden-Music-Bot.git
 cd Raiden-Music-Bot
 ```
 
@@ -467,7 +467,7 @@ See the [LICENSE](LICENSE) file for details.
 
 ## ❤️ Credits
 
-Developed and maintained by **Satoruonwork31**.
+Developed and maintained by **Ray**.
 
 Special thanks to everyone who supports the project.
 
@@ -490,7 +490,7 @@ Follow these steps to set up and run Raiden Music Bot.
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Satoruonwork31/Raiden-Music-Bot.git
+git clone https://github.com/Void-Verser/Raiden-Music-Bot.git
 cd Raiden-Music-Bot
 ```
 
