@@ -14,9 +14,9 @@ _HTML = ParseMode.HTML
 _MAX_RENDER = 15
 
 
-def _line(idx: int, track: q.Track) -> str:
+def _line(chat_id: int, idx: int, track: q.Track) -> str:
     icon = "🎬" if track.is_video else "🎵"
-    return (f"<b>{idx}.</b> {icon} {html.escape(track.title)} "
+    return (f"<b>{idx}.</b> {icon} {html.escape(q.display_title(chat_id, track))} "
             f"— <i>{html.escape(str(track.requested_by))}</i>")
 
 
@@ -42,13 +42,14 @@ async def queue_command(client, message):
     if current:
         icon = "🎬" if current.is_video else "🎵"
         lines.append(
-            f"\n▶️ <b>Now playing:</b> {icon} {html.escape(current.title)} "
+            f"\n▶️ <b>Now playing:</b> {icon} "
+            f"{html.escape(q.display_title(message.chat.id, current))} "
             f"— <i>{html.escape(str(current.requested_by))}</i>"
         )
     if upcoming:
         lines.append("\n⏭️ <b>Up next:</b>")
         for i, track in enumerate(upcoming[:_MAX_RENDER], start=1):
-            lines.append(_line(i, track))
+            lines.append(_line(message.chat.id, i, track))
         extra = len(upcoming) - _MAX_RENDER
         if extra > 0:
             lines.append(f"<i>… and {extra} more.</i>")

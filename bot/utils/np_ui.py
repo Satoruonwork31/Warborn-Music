@@ -42,11 +42,12 @@ def _fmt_dur(seconds) -> str:
     return f"{s // 3600}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 
-def _card(track, repeat: str, duration=None) -> str:
+def _card(track, repeat: str, duration=None, title: str = None) -> str:
     """Compact Now Playing card (4 lines). Premium custom emoji with
     unicode fallbacks; title/requester HTML-escaped so odd characters
-    can't break the parse."""
-    title = html.escape((track.title or "Unknown title").strip())
+    can't break the parse. `title` overrides track.title when the caller
+    resolved a display name (e.g. the dynamic "Mp4 Video N")."""
+    title = html.escape(((title if title is not None else track.title) or "Unknown title").strip())
     requester = html.escape((track.requested_by or "someone").strip())
     end = _fmt_dur(duration if duration is not None else getattr(track, "duration", None))
     return (
@@ -65,8 +66,10 @@ def render_now_playing(track, duration=None) -> str:
 
 
 def render_for_chat(chat_id: int, track, duration=None) -> str:
-    """Same as render_now_playing but reads the chat's repeat flag."""
-    return _card(track, "ON" if q.get_repeat(chat_id) else "OFF", duration)
+    """Same as render_now_playing but reads the chat's repeat flag and resolves
+    the dynamic display title (clean "Mp4 Video N" for generic local MP4s)."""
+    return _card(track, "ON" if q.get_repeat(chat_id) else "OFF", duration,
+                 title=q.display_title(chat_id, track))
 
 
 def nowplaying_keyboard(styled: bool = True) -> InlineKeyboardMarkup:

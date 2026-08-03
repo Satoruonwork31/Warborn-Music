@@ -28,6 +28,12 @@ class Track:
     is_video: bool = False
     duration: Optional[int] = None
     thumb: Optional[str] = None  # artwork URL (for the composited player image)
+    # True for locally uploaded/downloaded MP4s that have no real title (the
+    # source only gives a UUID-ish filename). Their display name is generated
+    # dynamically from the queue via display_title() — "Mp4 Video[ N]" — so no
+    # filename/hash/file-id is ever shown. `title` still holds a clean base
+    # ("Mp4 Video") for any consumer that reads it directly.
+    generic_mp4: bool = False
 
 
 _lock = Lock()
@@ -43,6 +49,35 @@ _HISTORY_MAX = 50
 def now_playing(chat_id: int) -> Optional[Track]:
     with _lock:
         return _current.get(chat_id)
+
+
+def display_title(chat_id: int, track: Track) -> str:
+    """The name to SHOW for `track` in this chat's player/queue UI.
+
+    Non-generic tracks (YouTube/Spotify/audio/resolved video — anything with a
+    real title) are returned unchanged. Generic local MP4s get a clean name
+    generated dynamically from the CURRENT queue order:
+      • a single MP4 anywhere in the timeline -> "Mp4 Video"
+      • multiple MP4s                          -> "Mp4 Video 1", "Mp4 Video 2", …
+    numbered by their position in [now-playing] + [upcoming]. Nothing is
+    renamed on disk and no filename/hash/file-id is ever exposed.
+    """
+    if not getattr(track, "generic_mp4", False):
+        return track.title
+    with _lock:
+        ordered = []
+        cur = _current.get(chat_id)
+        if cur is not None:
+            ordered.append(cur)
+        ordered.extend(_upcoming.get(chat_id, ()))
+    mp4s = [t for t in ordered if getattr(t, "generic_mp4", False)]
+    if len(mp4s) <= 1:
+        return "Mp4 Video"
+    for i, t in enumerate(mp4s, start=1):
+        if t is track:
+            return f"Mp4 Video {i}"
+    # Not currently in the timeline (e.g. a just-skipped track) — clean, unnumbered.
+    return "Mp4 Video"
 
 
 def upcoming(chat_id: int) -> list:

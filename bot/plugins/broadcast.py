@@ -12,10 +12,13 @@ passive group=-1 handler in this module records every chat_id we see.
 """
 
 import asyncio
+import copy
 import logging
+import re
 
 from pyrogram import Client, filters
 from pyrogram.enums import ChatMemberStatus, ChatType, ParseMode
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import (
     ChannelInvalid,
     ChannelPrivate,
@@ -41,6 +44,94 @@ _DELAY_BETWEEN_SENDS = 0.05
 def _flood_seconds(exc: FloodWait) -> int:
     # pyrofork 2.x uses .value, older releases used .x. Cover both.
     return int(getattr(exc, "value", None) or getattr(exc, "x", 30))
+
+
+def _has_inline_keyboard(markup) -> bool:
+    """True iff `markup` is an inline keyboard (InlineKeyboardMarkup). Reply
+    keyboards / ForceReply / ReplyKeyboardRemove expose no `.inline_keyboard`,
+    so they fall through to the normal forward path unchanged."""
+    return bool(getattr(markup, "inline_keyboard", None))
+
+
+def _count_buttons(markup) -> int:
+    return sum(len(row) for row in (getattr(markup, "inline_keyboard", None) or []))
+
+
+# Inline-button authoring syntax for /broadcast. Lets an admin attach buttons
+# that the BOT builds itself — guaranteed to render, with no dependence on being
+# able to read a keyboard off some other message (which Telegram forbids for a
+# bot on messages it didn't send). Widely-used "buttonurl" convention:
+#   [Label](buttonurl://https://example.com)         -> URL button on a NEW row
+#   [Label](buttonurl://https://example.com:same)    -> put it on the PREVIOUS row
+_BUTTON_RE = re.compile(r"\[([^\[\]]+)\]\(buttonurl://(.+?)(:same)?\)", re.IGNORECASE)
+
+
+def _shift_entities_out(entities, spans):
+    """Return `entities` with the character ranges in `spans` (button-syntax
+    removed from the text) taken out: entities fully inside a removed span are
+    dropped, and every other entity's offset is shifted left by the amount of
+    removed text before it. Keeps premium custom-emoji entities aligned."""
+    out = []
+    for ent in (entities or []):
+        s, e = ent.offset, ent.offset + ent.length
+        if any(rs <= s and e <= re_ for rs, re_ in spans):
+            continue  # entity lived entirely inside a removed button definition
+        removed_before = sum((re_ - rs) for rs, re_ in spans if re_ <= s)
+        new = copy.copy(ent)
+        new.offset = s - removed_before
+        if new.offset < 0 or new.length <= 0:
+            continue
+        out.append(new)
+    return out
+
+
+def _parse_button_markup(text, entities):
+    """Pull [Label](buttonurl://URL[:same]) definitions out of `text`.
+
+    Returns (clean_text, clean_entities, markup_or_None): the button definitions
+    are removed from the visible text, remaining entities are offset-shifted to
+    stay aligned, and the buttons become an InlineKeyboardMarkup (URL buttons —
+    the safe, universal type; ':same' keeps a button on the previous row).
+    Never raises: on any parse issue it returns the text unchanged, markup=None,
+    so a normal /broadcast is completely unaffected."""
+    try:
+        matches = list(_BUTTON_RE.finditer(text or ""))
+        if not matches:
+            return text, entities, None
+        rows, parts, spans, last = [], [], [], 0
+        for m in matches:
+            parts.append(text[last:m.start()])
+            spans.append((m.start(), m.end()))
+            last = m.end()
+            btn = InlineKeyboardButton(m.group(1).strip(), url=m.group(2).strip())
+            if m.group(3) and rows:  # ':same' → same row as the previous button
+                rows[-1].append(btn)
+            else:
+                rows.append([btn])
+        parts.append(text[last:])
+        clean_text = "".join(parts)
+        clean_entities = _shift_entities_out(entities, spans)
+
+        # Trim trailing whitespace left where buttons were removed, clamping any
+        # entity that ran into the trimmed tail (offsets before the cut are safe).
+        stripped = clean_text.rstrip()
+        if len(stripped) < len(clean_text):
+            cut, kept = len(stripped), []
+            for ent in clean_entities:
+                if ent.offset >= cut:
+                    continue
+                if ent.offset + ent.length > cut:
+                    ent.length = cut - ent.offset
+                if ent.length > 0:
+                    kept.append(ent)
+            clean_text, clean_entities = stripped, kept
+
+        markup = InlineKeyboardMarkup(rows) if rows else None
+        return clean_text, clean_entities, markup
+    except Exception as exc:
+        logger.info("broadcast: button-syntax parse failed (%s: %s) — ignoring",
+                    type(exc).__name__, exc)
+        return text, entities, None
 
 
 def _shift_entities_for_body(message, body_start: int):
@@ -75,27 +166,28 @@ def _shift_entities_for_body(message, body_start: int):
     return out
 
 
-async def _send_one(client, chat_id: int, *, reply, body: str, body_entities):
+async def _send_one(client, chat_id: int, *, reply, body: str, body_entities, markup=None):
     """Returns (sent_message, error_class_name_or_None).
 
-    For replied-message broadcasts we use forward_messages with
-    hide_sender_name=True (kurigram's name for the same flag pyrofork
-    called drop_author) rather than Message.copy(): copy() routes media
-    through send_cached_media WITHOUT parse_mode=DISABLED, which
-    re-parses caption_entities and strips premium custom emoji. The
-    native forward keeps entities (including <emoji id="..."> custom
-    emoji) byte-for-byte.
+    Replied-message broadcasts are delivered with a NATIVE Telegram forward
+    (client.forward_messages, no hide_sender_name/drop_author) — exactly how a
+    normal forward behaves. Telegram carries the message across server-side, so
+    the media, caption, formatting, entities, the "Forwarded from …" header, and
+    the inline keyboard (reply_markup) are all preserved as-is, with nothing
+    reconstructed. NOTE: the previous hide_sender_name=True variant turned the
+    forward into a copy, which is what stripped the inline keyboard — a plain
+    forward keeps it.
 
-    For text-mode broadcasts we pass `entities=...` explicitly so the
-    caller-extracted (and offset-shifted) custom-emoji entities are kept
-    on the wire instead of being re-parsed away.
+    For text-mode broadcasts (`/broadcast <text>`, no reply) we pass
+    `entities=...` explicitly so the caller-extracted (and offset-shifted)
+    custom-emoji entities are kept on the wire instead of being re-parsed away,
+    plus any inline keyboard the admin authored via the buttonurl:// syntax.
     """
     if reply is not None:
         forwarded = await client.forward_messages(
             chat_id=chat_id,
             from_chat_id=reply.chat.id,
             message_ids=reply.id,
-            hide_sender_name=True,
             disable_notification=True,
         )
         result = forwarded[0] if isinstance(forwarded, list) else forwarded
@@ -104,6 +196,7 @@ async def _send_one(client, chat_id: int, *, reply, body: str, body_entities):
         chat_id,
         body,
         entities=body_entities or None,
+        reply_markup=markup if _has_inline_keyboard(markup) else None,
     )
     return sent, None
 
@@ -162,11 +255,22 @@ async def broadcast_command(client, message):
             body_text = raw[space + 1 :]
             body_entities = _shift_entities_for_body(message, space + 1)
 
+    # Extract any inline-button definitions the admin typed into the command
+    # ([Label](buttonurl://URL[:same])). These are removed from the visible text
+    # and become a keyboard the bot builds itself — the guaranteed way to
+    # broadcast buttons regardless of whether a replied message's keyboard is
+    # readable. No button syntax → text/entities returned unchanged.
+    typed_markup = None
+    if body_text:
+        body_text, body_entities, typed_markup = _parse_button_markup(body_text, body_entities)
+
     if reply is None and not body_text:
         await message.reply_text(
             f"{e.MEGA} <b>Broadcast — how to use</b>\n"
             "• <code>/broadcast &lt;text&gt;</code> — <i>send to every known chat</i>\n"
-            "• <i>Reply to a message with</i> <code>/broadcast</code> — <i>copy it verbatim</i>\n\n"
+            "• <i>Reply to a message with</i> <code>/broadcast</code> — <i>copy it verbatim (keeps its inline buttons)</i>\n"
+            "• <i>Add buttons yourself:</i> <code>/broadcast Hi! [Join](buttonurl://https://t.me/yourchat)</code>\n"
+            "   <i>— use</i> <code>:same</code> <i>before the closing</i> <code>)</code> <i>to put a button on the same row.</i>\n\n"
             "<i>Groups: pinned silently. DMs: sent, not pinned.</i>",
             parse_mode=ParseMode.HTML)
         return
@@ -179,6 +283,15 @@ async def broadcast_command(client, message):
             "have a user DM it / message a group it's in.</i>",
             parse_mode=ParseMode.HTML)
         return
+
+    # Reply broadcasts are delivered by a NATIVE forward (see _send_one), which
+    # preserves the replied message's own inline keyboard server-side — no
+    # reading/reconstruction needed. `reply_markup` here only applies to the
+    # text-mode (`/broadcast <text>`) path, where the admin can author buttons
+    # with the buttonurl:// syntax.
+    reply_markup = typed_markup if reply is None else None
+    logger.info("broadcast: starting — reply=%s, %d authored button(s) on text path",
+                reply is not None, _count_buttons(reply_markup))
 
     n_dms = sum(1 for c in targets if c > 0)
     n_groups = len(targets) - n_dms
@@ -198,7 +311,8 @@ async def broadcast_command(client, message):
         kind = "DM" if chat_id > 0 else "group"
         try:
             bcast, _ = await _send_one(
-                client, chat_id, reply=reply, body=body_text, body_entities=body_entities
+                client, chat_id, reply=reply, body=body_text,
+                body_entities=body_entities, markup=reply_markup,
             )
             sent += 1
             if chat_id > 0:
@@ -217,7 +331,8 @@ async def broadcast_command(client, message):
             await asyncio.sleep(wait + 1)
             try:
                 bcast, _ = await _send_one(
-                    client, chat_id, reply=reply, body=body_text, body_entities=body_entities
+                    client, chat_id, reply=reply, body=body_text,
+                    body_entities=body_entities, markup=reply_markup,
                 )
                 sent += 1
                 if await _maybe_pin(client, bcast):

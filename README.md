@@ -913,3 +913,83 @@ These are actual files committed under **`bot/assets/`**. To change them, just r
 - **"I want different `/aura`, `/pat`, `/waifu`, or Now-Playing artwork"** → **Type B**, replace the files in `bot/assets/`.
 
 Either way, **you never have to modify the Python code** to change images — env vars for the URLs, file replacement for the assets.
+
+---
+
+<div align="center">
+
+# 🎨 Managing Banner Images & Assets
+
+*A complete reference for putting your own banners/artwork into the bot and managing every bundled asset to your liking.*
+
+</div>
+
+The bot ships with ready-made artwork so it looks good out of the box, but everything is yours to swap. There are **two kinds** of visuals, and you manage them differently:
+
+- **URL images** — set an image link in `.env`; no files, no redeploy of code.
+- **Asset files** — real image/video files committed under **`bot/assets/`**; replace the file to change them.
+
+---
+
+## 🖼️ A. Banner images set via `.env` (URL — easiest)
+
+Upload your image to any host that gives a **direct link** (e.g. [imgbb](https://imgbb.com), [Catbox](https://catbox.moe)) — the link should open the raw image and ideally end in `.jpg`/`.png`. Then set it in `.env` (leave blank to keep the default):
+
+| Shown on | Variable |
+|----------|----------|
+| `/start` banner | `START_IMAGE` |
+| `/help` banner | `HELP_IMAGE` |
+| Welcome (join) card background | `WELCOME_BANNER_URL` |
+| Welcome fallback avatar | `WELCOME_AVATAR_URL` |
+| `/kill` result media | `KILL_SUCCESS_MEDIA` / `KILL_FAILURE_MEDIA` |
+
+```env
+START_IMAGE=https://your-host/your-start-banner.jpg
+HELP_IMAGE=https://your-host/your-help-banner.jpg
+```
+Save, restart — done. No code changes.
+
+---
+
+## 📁 B. Asset files under `bot/assets/` (replace the file)
+
+These are committed image/video files. To use your own, **replace the file with the same name**, then commit & redeploy. Full asset map:
+
+| Asset file | Used for | Type / tips |
+|------------|----------|-------------|
+| `bot/assets/now_playing_template.png` | Background of the **audio "Now Playing"** card | PNG; keep similar dimensions so the title/artwork stay aligned |
+| `bot/assets/vplay_image.jpg` | Banner on the **`/vplay` (video)** Now-Playing & Added-to-Queue cards | JPG; use a wide banner image |
+| `bot/assets/mp4_default_art.jpg` | Default cover art for **MP4/video** tracks that have no thumbnail | JPG; square works best |
+| `bot/assets/waifu/fallback_1.jpg`, `fallback_2.jpg` | Fallback pictures for **`/waifu`** | JPG |
+| `bot/assets/aura/*.mp4` | Random clip pool for **`/aura`** | MP4; see pool note below |
+| `bot/assets/pat/*.mp4` | Random GIF/clip pool for **`/pat`** | MP4; see pool note below |
+
+### How to replace a single banner (example: your own `/vplay` banner)
+```bash
+# from the repo root
+cp /path/to/your-banner.jpg bot/assets/vplay_image.jpg
+git add bot/assets/vplay_image.jpg
+git commit -m "Use my own /vplay banner"
+git push
+```
+Redeploy (or restart) and the bot uses it immediately.
+
+### Managing the `/aura` and `/pat` pools
+These folders are **random pools** — the bot picks one file at random each time, so you can shape them freely:
+- **Add** clips: drop new `.mp4` files into `bot/assets/aura/` or `bot/assets/pat/` (any filename).
+- **Remove** clips: delete the ones you don't want.
+- **Replace** clips: swap files in place.
+
+No code edit is needed — new files are detected automatically. Just make sure each folder has **at least one** file so the command always has something to show.
+
+> **Naming rule:** for the single fixed banners (`now_playing_template.png`, `vplay_image.jpg`, `mp4_default_art.jpg`, `waifu/fallback_1.jpg`, `waifu/fallback_2.jpg`) keep the **exact filename** — they're referenced directly in code. For the `aura/` and `pat/` **pools**, any filename works.
+
+---
+
+## Quick decision guide
+
+- **Change `/start`, `/help`, or welcome image →** set the URL in `.env` (Section A).
+- **Change the Now-Playing / `/vplay` / MP4 default artwork →** replace the file in `bot/assets/` (Section B).
+- **Curate `/aura` or `/pat` clips →** add/remove/replace files in their folders (Section B).
+
+Either way, **no Python code changes are required** to make the bot use your own banners and assets.

@@ -234,6 +234,7 @@ async def do_play(client, message, *, is_video: bool):
     )
 
     duration = None
+    generic_mp4 = False
     if replied_media:
         # The actual file type wins over the command: an mp3 can only be
         # streamed as audio even if the user typed /vplay.
@@ -252,6 +253,14 @@ async def do_play(client, message, *, is_video: bool):
                 )
             )
             info = replied_label
+            # A locally uploaded/downloaded VIDEO only carries a UUID-ish
+            # filename, never a real title. Flag it so the UI shows a clean,
+            # queue-numbered "Mp4 Video[ N]" (queue.display_title) instead of
+            # leaking the filename/hash — and keep a clean base title here so
+            # nothing downstream (logs included) exposes the raw name.
+            if is_video:
+                generic_mp4 = True
+                info = "Mp4 Video"
         except Exception as exc:
             logger.exception("download of replied media failed")
             await status.edit_text(
@@ -288,6 +297,7 @@ async def do_play(client, message, *, is_video: bool):
         requested_by=_requester_name(message),
         is_video=is_video,
         duration=duration,
+        generic_mp4=generic_mp4,
     )
     # Cheap artwork url when the query itself is a YouTube link (no network).
     # Text queries stay None here and resolve lazily by title later, so nothing
@@ -299,10 +309,19 @@ async def do_play(client, message, *, is_video: bool):
     # If something is already playing in this chat, just enqueue.
     if q.is_active(message.chat.id):
         position = q.enqueue(message.chat.id, track)
-        artist, song = _split_artist(track.title)
+        artist, song = _split_artist(q.display_title(message.chat.id, track))
         eta = _fmt_eta(_queue_eta(message.chat.id, position))
-        art = await _track_artwork(track)
-        thumb = await thumbnail.generate(art)
+        if track.is_video:
+            # Video/MP4 in the queue uses the same dedicated /vplay banner as
+            # the Now Playing message. Falls back to the composited card only if
+            # the banner asset is missing. Audio is unchanged.
+            thumb = thumbnail.default_photo()
+            if thumb is None:
+                art = await _track_artwork(track)
+                thumb = await thumbnail.generate(art, default_when_missing=True)
+        else:
+            art = await _track_artwork(track)
+            thumb = await thumbnail.generate(art)
         caption = render_queue_added(
             song, artist, track.duration, position, eta, track.requested_by,
         )
@@ -426,8 +445,18 @@ async def _send_now_playing(client, chat_id, track, *, replace=None) -> None:
     body = render_for_chat(chat_id, track)
     photo = None
     try:
-        art = await _track_artwork(track)
-        photo = await thumbnail.generate(art)
+        if track.is_video:
+            # /vplay: attach the dedicated video image (bundled asset), not the
+            # composited player card. Falls back to the card only if the asset
+            # is somehow missing.
+            photo = thumbnail.default_photo()
+            if photo is None:
+                art = await _track_artwork(track)
+                photo = await thumbnail.generate(art, default_when_missing=True)
+        else:
+            # /play (audio): unchanged — the composited Now Playing card.
+            art = await _track_artwork(track)
+            photo = await thumbnail.generate(art)
     except Exception:
         logger.exception("now-playing thumbnail generation failed")
     if replace is not None:
@@ -462,20 +491,24 @@ async def _send_now_playing(client, chat_id, track, *, replace=None) -> None:
     try:
         icon = "🎬" if track.is_video else "🎵"
         await client.send_message(
-            chat_id, f"{icon} <b>Now Playing</b>\n<code>{html.escape(track.title)}</code>",
+            chat_id,
+            f"{icon} <b>Now Playing</b>\n"
+            f"<code>{html.escape(q.display_title(chat_id, track))}</code>",
             parse_mode=ParseMode.HTML,
         )
     except Exception:
         logger.exception("now-playing render failed entirely")
 
 
-def _skip_card(track, user, *, queue_empty: bool) -> str:
+def _skip_card(track, user, *, queue_empty: bool, title: str = None) -> str:
     """Premium skip confirmation: skipped title, song/video wording (auto-
-    detected from the track), and a clickable by-ID mention of the skipper."""
+    detected from the track), and a clickable by-ID mention of the skipper.
+    `title` overrides track.title with a resolved display name when provided."""
     is_vid = bool(getattr(track, "is_video", False))
     kind = "Video" if is_vid else "Song"
     tail = "🎬" if is_vid else "🎵"
-    title = html.escape(track.title) if track and getattr(track, "title", None) else "the current track"
+    _t = title if title is not None else (getattr(track, "title", None) if track else None)
+    title = html.escape(_t) if _t else "the current track"
     lines = [
         f"{_E_VC} <b>Skipped</b>",
         f"{tail} <b>{kind}:</b> {title}",
@@ -507,9 +540,12 @@ async def do_skip(client, message):
         )
         return
 
-    # Capture what's being skipped (and who) BEFORE the queue advances.
+    # Capture what's being skipped (and who) BEFORE the queue advances — resolve
+    # the display title now, while the track is still in the timeline, so a
+    # generic MP4 shows its proper "Mp4 Video[ N]".
     skipped = q.now_playing(message.chat.id)
     skipper = message.from_user
+    skipped_title = q.display_title(message.chat.id, skipped) if skipped else None
 
     nxt = q.pop_next(message.chat.id)
     if nxt is None:
@@ -517,7 +553,8 @@ async def do_skip(client, message):
         # of the group, same as a natural stream-end. Anti-misuse.
         await end_session(message.chat.id)
         await message.reply_text(
-            _skip_card(skipped, skipper, queue_empty=True), parse_mode=ParseMode.HTML,
+            _skip_card(skipped, skipper, queue_empty=True, title=skipped_title),
+            parse_mode=ParseMode.HTML,
         )
         return
 
@@ -534,6 +571,7 @@ async def do_skip(client, message):
     # Enhanced skip confirmation, then the next track's full Now Playing card
     # + controls (existing behaviour preserved).
     await message.reply_text(
-        _skip_card(skipped, skipper, queue_empty=False), parse_mode=ParseMode.HTML,
+        _skip_card(skipped, skipper, queue_empty=False, title=skipped_title),
+        parse_mode=ParseMode.HTML,
     )
     await _send_now_playing(client, message.chat.id, nxt)

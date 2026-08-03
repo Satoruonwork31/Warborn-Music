@@ -68,8 +68,17 @@ async def _refresh_card(callback_query, *, update_media: bool = True) -> None:
         if is_photo and update_media:
             photo = None
             try:
-                from bot.utils.play_actions import _track_artwork
-                photo = await thumbnail.generate(await _track_artwork(cur))
+                if cur.is_video:
+                    # Keep the /vplay message on its dedicated video image.
+                    photo = thumbnail.default_photo()
+                    if photo is None:
+                        from bot.utils.play_actions import _track_artwork
+                        photo = await thumbnail.generate(
+                            await _track_artwork(cur), default_when_missing=True
+                        )
+                else:
+                    from bot.utils.play_actions import _track_artwork
+                    photo = await thumbnail.generate(await _track_artwork(cur))
             except Exception:
                 logger.exception("refresh_card: thumbnail regen failed")
             if photo is not None:

@@ -74,6 +74,37 @@ setup_venv() {
   python -m pip install -r requirements.txt
 }
 
+# --- 2b. bundled assets ---------------------------------------------------
+# The default MP4/video artwork ships in the repo (bot/assets/mp4_default_art.jpg).
+# Fetch it ONCE here only if it's somehow missing, so the player never has to
+# download it at playback time. Non-fatal: a missing asset just falls back to
+# the template-only thumbnail.
+fetch_assets() {
+  mkdir -p bot/assets
+  # each entry: "dest_path|url"
+  local assets=(
+    "bot/assets/mp4_default_art.jpg|https://i.ibb.co/svmFmx4N/e734a868ca72.jpg"
+    "bot/assets/vplay_image.jpg|https://i.ibb.co/zWXZfkP8/9424cd5dfc90.jpg"
+  )
+  local entry dest url
+  for entry in "${assets[@]}"; do
+    dest="${entry%%|*}"
+    url="${entry#*|}"
+    if [ -s "$dest" ]; then
+      log "Asset present: $dest"
+      continue
+    fi
+    log "Fetching asset → $dest"
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL -o "$dest" "$url" || warn "Could not fetch $dest (a bundled fallback will be used)."
+    elif command -v wget >/dev/null 2>&1; then
+      wget -qO "$dest" "$url" || warn "Could not fetch $dest (a bundled fallback will be used)."
+    else
+      warn "Neither curl nor wget available — skipping $dest fetch."
+    fi
+  done
+}
+
 # --- 3. sanity checks -----------------------------------------------------
 verify() {
   log "Verifying install…"
@@ -98,6 +129,7 @@ check_env() {
 
 install_system_deps
 setup_venv
+fetch_assets
 verify
 
 if ! check_env; then
